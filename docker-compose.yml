@@ -2,23 +2,57 @@ version: "3.8"
 
 services:
 
+  # ── Core Cloud Simulation ──────────────────────
   localstack:
     container_name: localstack-main
     image: localstack/localstack
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=s3,iam,dynamodb,lambda,apigateway
+      - SERVICES=s3,iam,sts,dynamodb,lambda,apigateway,secretsmanager,ssm,sqs,sns,logs,kms,cloudwatch
       - DEBUG=1
     volumes:
       - "./volume:/var/lib/localstack"
       - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - cyberrange
 
+  # ── Vulnerable Web App (SSRF, CMDi, Info Disclosure) ──
+  vulnerable-app:
+    container_name: vulnerable-app
+    build: ./vulnerable-app
+    ports:
+      - "8080:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - LOCALSTACK_URL=http://localstack:4566
+      - SECRET_DB_PASSWORD=Pr0d_DB_S3cret!
+      - INTERNAL_API_KEY=sk-internal-vuln-app-key
+    depends_on:
+      - localstack
+      - metadata-service
+    networks:
+      - cyberrange
+
+  # ── Fake EC2 Metadata Service (IMDS v1) ────────
+  metadata-service:
+    container_name: metadata-service
+    build: ./metadata-service
+    expose:
+      - "80"
+    networks:
+      - cyberrange
+
+  # ── Monitoring Stack ───────────────────────────
   node-exporter:
     image: prom/node-exporter:latest
     container_name: node-exporter
     ports:
       - "9100:9100"
+    networks:
+      - cyberrange
 
   prometheus:
     image: prom/prometheus
@@ -27,6 +61,8 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - cyberrange
 
   grafana:
     image: grafana/grafana
@@ -35,3 +71,9 @@ services:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - cyberrange
+
+networks:
+  cyberrange:
+    driver: bridge

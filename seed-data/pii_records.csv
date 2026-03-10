@@ -1,0 +1,11 @@
+id,first_name,last_name,email,ssn,credit_card,cvv,phone,dob,address,health_condition
+1001,John,Smith,john.smith@example.com,123-45-6789,4111-1111-1111-1111,123,555-0101,1985-03-15,"123 Main St, Springfield, IL 62701",Hypertension
+1002,Mary,Jones,mary.jones@example.com,234-56-7890,5500-0000-0000-0004,456,555-0102,1990-07-22,"456 Oak Ave, Portland, OR 97201",None
+1003,Robert,Williams,r.williams@example.com,345-67-8901,3400-0000-0000-009,789,555-0103,1978-11-08,"789 Pine Rd, Austin, TX 78701",Diabetes Type 2
+1004,Patricia,Brown,p.brown@example.com,456-78-9012,6011-0000-0000-0004,321,555-0104,1992-01-30,"321 Elm St, Denver, CO 80201",Asthma
+1005,Michael,Davis,m.davis@example.com,567-89-0123,3530-1113-3330-0000,654,555-0105,1988-06-17,"654 Cedar Ln, Seattle, WA 98101",None
+1006,Jennifer,Wilson,j.wilson@example.com,678-90-1234,4222-2222-2222-2222,987,555-0106,1995-09-03,"987 Birch Dr, Miami, FL 33101",Anxiety
+1007,David,Taylor,d.taylor@example.com,789-01-2345,5100-0000-0000-0008,135,555-0107,1982-12-25,"135 Maple St, Boston, MA 02101",None
+1008,Linda,Anderson,l.anderson@example.com,890-12-3456,4000-0000-0000-0002,246,555-0108,1975-04-11,"246 Walnut Ave, Chicago, IL 60601",High Cholesterol
+1009,James,Thomas,j.thomas@example.com,901-23-4567,5200-8282-8282-8210,357,555-0109,1998-08-19,"357 Spruce Ct, Phoenix, AZ 85001",None
+1010,Sarah,Martinez,s.martinez@example.com,012-34-5678,6011-1111-1111-1117,468,555-0110,1987-02-28,"468 Willow Way, San Diego, CA 92101",Migraine

@@ -1,0 +1,96 @@
+{
+    "version": 4,
+    "terraform_version": "1.6.0",
+    "serial": 42,
+    "lineage": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "outputs": {
+        "database_endpoint": {
+            "value": "prod-db.cyberrange.local:5432",
+            "type": "string"
+        },
+        "admin_api_key": {
+            "value": "sk-admin-abc123def456",
+            "type": "string",
+            "sensitive": true
+        },
+        "jwt_signing_key": {
+            "value": "my-super-secret-jwt-key-do-not-share",
+            "type": "string",
+            "sensitive": true
+        }
+    },
+    "resources": [
+        {
+            "mode": "managed",
+            "type": "aws_db_instance",
+            "name": "production",
+            "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+            "instances": [
+                {
+                    "attributes": {
+                        "address": "prod-db.cyberrange.local",
+                        "port": 5432,
+                        "username": "db_admin",
+                        "password": "Pr0d_DB_S3cret!",
+                        "db_name": "customer_data",
+                        "engine": "postgres",
+                        "engine_version": "15.4",
+                        "publicly_accessible": true,
+                        "storage_encrypted": false,
+                        "multi_az": false,
+                        "backup_retention_period": 0
+                    }
+                }
+            ]
+        },
+        {
+            "mode": "managed",
+            "type": "aws_iam_access_key",
+            "name": "deploy_key",
+            "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+            "instances": [
+                {
+                    "attributes": {
+                        "user": "deploy-service-account",
+                        "id": "AKIAI44QH8DHBEXAMPLE",
+                        "secret": "je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY",
+                        "status": "Active"
+                    }
+                }
+            ]
+        },
+        {
+            "mode": "managed",
+            "type": "aws_s3_bucket",
+            "name": "backups",
+            "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+            "instances": [
+                {
+                    "attributes": {
+                        "bucket": "cyberrange-prod-backups-2026",
+                        "acl": "private",
+                        "region": "us-east-1",
+                        "versioning": {
+                            "enabled": false
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "mode": "managed",
+            "type": "aws_secretsmanager_secret",
+            "name": "master_key",
+            "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+            "instances": [
+                {
+                    "attributes": {
+                        "name": "prod/master-encryption-key",
+                        "description": "Master encryption key for all services",
+                        "arn": "arn:aws:secretsmanager:us-east-1:000000000000:secret:prod/master-encryption-key"
+                    }
+                }
+            ]
+        }
+    ]
+}
