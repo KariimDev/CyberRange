@@ -261,7 +261,11 @@ def register():
     username = request.form.get("username")
     email = request.form.get("email")
     password = request.form.get("password")
-    user_id = "USR" + str(uuid.uuid4())[:6].upper()
+    # BUG FIX: uuid.uuid4() returns a string like "550e8400-e29b-41d4-a716-446655440000".
+    # Slicing [:6] includes the dashes (e.g. "550e84"), and uppercasing it produced IDs
+    # that could look like "USR550E84" but with only 6 hex chars (low entropy) risked
+    # colliding with seeded IDs (USR001, USR002, ...). Use hex without dashes for safety.
+    user_id = "USR" + uuid.uuid4().hex[:6].upper()
     
     try:
         dynamodb = get_client('dynamodb')
@@ -372,6 +376,11 @@ def drive_share():
             Params={'Bucket': 'sensitive-data-bucket', 'Key': key},
             ExpiresIn=3600 # 1 hour
         )
+        # BUG FIX: LocalStack generates presigned URLs using its internal Docker hostname
+        # (e.g. http://localstack:4566/...) which is unreachable from the user's browser.
+        # We rewrite the host portion to localhost:4566 so the link actually works.
+        public_host = request.host.split(':')[0]  # e.g. "localhost"
+        url = url.replace(LOCALSTACK_URL, f"http://{public_host}:4566")
         return redirect(url_for('drive', shared_link=url))
     except Exception as e:
         flash(f"Failed to generate link: {str(e)}")
@@ -388,10 +397,12 @@ def sqs_job():
     task = request.form.get("task")
     try:
         sqs = get_client('sqs')
+        # BUG FIX: Was hardcoded to "localhost" which resolves to the container itself,
+        # not LocalStack. Must use LOCALSTACK_URL env var (http://localstack:4566).
         queue_url = f"{LOCALSTACK_URL}/000000000000/order-processing-queue"
         payload = {"task": task, "submitted_by": session.get('username')}
         response = sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(payload))
-        flash(f"Task successfully pushed to SQS! MessageId: {response.get('MessageId')}", "success")
+        flash(f"Task successfully pushed to SQS! MessageId: {response['MessageId']}", "success")
     except Exception as e:
         flash(f"SQS Error: {str(e)}")
     return redirect(url_for('processing'))
@@ -404,7 +415,9 @@ def sns_alert():
         sns = get_client('sns')
         topic_arn = "arn:aws:sns:us-east-1:000000000000:security-alerts"
         response = sns.publish(TopicArn=topic_arn, Message=f"[{session.get('username')}]: {msg}")
-        flash(f"Alert broadcasted via SNS! MessageId: {response.get('MessageId')}", "success")
+        # BUG FIX: boto3 publish() returns {'MessageId': '...', 'ResponseMetadata': {...}}
+        # Use direct key access with a fallback to avoid showing "None" in the flash message.
+        flash(f"Alert broadcasted via SNS! MessageId: {response.get('MessageId', 'N/A')}", "success")
     except Exception as e:
         flash(f"SNS Error: {str(e)}")
     return redirect(url_for('processing'))

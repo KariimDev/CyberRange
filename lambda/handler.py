@@ -15,6 +15,13 @@ API_TOKEN = "sk-proj-abc123def456ghi789"
 # Another vulnerability: debug mode left on in production
 DEBUG_MODE = True
 
+# BUG FIX: "localhost:4566" inside a Lambda sandbox refers to the sandbox container itself,
+# not the LocalStack host. LocalStack injects LOCALSTACK_HOSTNAME into every Lambda
+# execution environment pointing to the actual LocalStack service host.
+# Fall back to "localstack" (Docker network alias) if the env var isn't set.
+LOCALSTACK_HOST = os.environ.get("LOCALSTACK_HOSTNAME", "localstack")
+LOCALSTACK_ENDPOINT = f"http://{LOCALSTACK_HOST}:4566"
+
 def handler(event, context):
     """
     Vulnerable Lambda function that:
@@ -38,7 +45,7 @@ def handler(event, context):
         if action == "get_user":
             dynamodb = boto3.client(
                 "dynamodb",
-                endpoint_url="http://localhost:4566",
+                endpoint_url=LOCALSTACK_ENDPOINT,
                 aws_access_key_id="test",
                 aws_secret_access_key="test",
                 region_name="us-east-1"
@@ -55,7 +62,7 @@ def handler(event, context):
         elif action == "list_files":
             s3 = boto3.client(
                 "s3",
-                endpoint_url="http://localhost:4566",
+                endpoint_url=LOCALSTACK_ENDPOINT,
                 aws_access_key_id="test",
                 aws_secret_access_key="test",
                 region_name="us-east-1"
